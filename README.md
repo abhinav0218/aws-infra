@@ -16,4 +16,4 @@ To run the terraform configuration files, we have to run the following commands
 
 Here, we have created 1 vpc, 3 private subnets and 3 public subnets in different availability zones but same region, 1 public route table, one private route table and 1 internet gateway.
 
-We have included  .terraform.lock.hcl and terraform.state in the gitignore file.
+We have included .terraform.lock.hcl and terraform.state in the gitignore file.
