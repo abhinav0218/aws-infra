@@ -12,6 +12,7 @@ module "vpc1" {
   root_volume_size           = var.root_volume_size
   root_volume_type           = var.root_volume_type
   availability_zones_suffix  = var.availability_zones_suffix
+  profile                    = var.profile
 
   # Define other variables as needed...
 }
@@ -21,6 +22,11 @@ variable "aws_region" {
   default = "us-east-1"
 }
 
+variable "profile" {
+  type    = string
+  default = "dev"
+
+}
 
 variable "vpc_cidr_block" {
   type    = string
