@@ -391,3 +391,17 @@ iam_instance_profile = aws_iam_instance_profile.ec2_instance_profile.name
 
 }
 
+data "aws_route53_zone" "zone" {
+  name = "${var.profile}.abhinavpalem.me"
+}
+
+resource "aws_route53_record" "main" {
+  zone_id = data.aws_route53_zone.zone.id
+  name    = "${var.profile}.abhinavpalem.me"
+  type    = "A"
+  ttl     = "300"
+  records = [aws_instance.my_ec2_instance.public_ip]
+
+  # Ensure the A record is created before the EC2 instance
+  depends_on = [aws_instance.my_ec2_instance]
+}
