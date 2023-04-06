@@ -24,7 +24,7 @@ variable "aws_region" {
 
 variable "profile" {
   type    = string
-  default = "dev"
+  default = "demo"
 
 }
 
