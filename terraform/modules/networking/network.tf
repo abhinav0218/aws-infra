@@ -58,13 +58,7 @@ resource "aws_vpc" "vpc1" {
 }
 
 
-resource "aws_internet_gateway" "igw" {
 
-  vpc_id = aws_vpc.vpc1.id
-  tags = {
-    Name = "internet_gateway"
-  }
-}
 
 
 resource "aws_subnet" "public_subnets" {
@@ -87,6 +81,13 @@ resource "aws_subnet" "private_subnets" {
   vpc_id            = aws_vpc.vpc1.id
   cidr_block        = var.private_subnet_cidr_blocks[count.index]
   availability_zone = "${var.aws_region}${substr(var.availability_zones_suffix[var.aws_region], count.index, 1)}"
+}
+resource "aws_internet_gateway" "igw" {
+
+  vpc_id = aws_vpc.vpc1.id
+  tags = {
+    Name = "internet_gateway"
+  }
 }
 
 resource "aws_route_table" "public_route_table" {
@@ -126,16 +127,56 @@ resource "aws_route_table_association" "private_subnet_associations" {
 }
 
 
-resource "aws_security_group" "app_security_group" {
-  name_prefix = "app_security_group"
+resource "aws_security_group" "instance" {
+  name_prefix = "instance-security-group"
   vpc_id      = aws_vpc.vpc1.id
 
   ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
+    from_port       = 22
+    to_port         = 22
+    protocol        = "tcp"
+    security_groups = [aws_security_group.load_balancer_security_group.id]
+    cidr_blocks     = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port       = 3000
+    to_port         = 3000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.load_balancer_security_group.id]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "all"
     cidr_blocks = ["0.0.0.0/0"]
   }
+}
+
+resource "aws_security_group" "database_security_group" {
+  name_prefix = "db_security_group"
+  vpc_id      = aws_vpc.vpc1.id
+
+  ingress {
+    from_port = 5432
+    to_port   = 5432
+    protocol  = "tcp"
+
+    security_groups = [aws_security_group.instance.id]
+
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "all"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "load_balancer_security_group" {
+  name_prefix = "load_balancer_security_group"
+  vpc_id      = aws_vpc.vpc1.id
 
   ingress {
     from_port   = 80
@@ -143,19 +184,14 @@ resource "aws_security_group" "app_security_group" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "all"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  ingress {
-    from_port   = 3000
-    to_port     = 3000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+  tags = {
+    Name = "load_balancer_security_group"
   }
 }
 
@@ -164,6 +200,54 @@ resource "random_id" "random" {
   byte_length = 4
 }
 
+data "aws_region" "current" {}
+
+resource "aws_lb" "load_balancer" {
+  name               = "web-lb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.load_balancer_security_group.id]
+  subnets            = [aws_subnet.public_subnets[0].id, aws_subnet.public_subnets[1].id, aws_subnet.public_subnets[2].id]
+  enable_deletion_protection = true
+  tags = {
+    Environment = "prod"
+  }
+}
+output "load_balancer_dns_name" {
+  value = aws_lb.load_balancer.dns_name
+}
+
+
+
+
+resource "aws_lb_target_group" "target_group" {
+  name        = "web-tg"
+  port        = 3000
+  protocol    = "HTTP"
+  target_type = "instance"
+  vpc_id      = aws_vpc.vpc1.id
+  health_check {
+    healthy_threshold   = 3
+    unhealthy_threshold = 3
+    timeout             = 10
+    interval            = 300
+    path                = "/healthz"
+  }
+
+
+}
+
+resource "aws_lb_listener" "lb_listener" {
+
+  load_balancer_arn = aws_lb.load_balancer.arn
+  port              = "80"
+  protocol          = "HTTP"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.target_group.arn
+  }
+
+}
 
 resource "aws_iam_policy" "webapp_s3_policy" {
   name = "WebAppS3"
@@ -180,7 +264,8 @@ resource "aws_iam_policy" "webapp_s3_policy" {
           "cloudwatch:GetMetricData",
           "cloudwatch:ListMetrics",
           "cloudwatch:PutMetricData",
-          "ec2:DescribeTags"
+          "ec2:DescribeTags",
+          "application-autoscaling:*"
         ]
         Effect = "Allow"
         Resource = [
@@ -244,13 +329,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "private_bucket_lifecycle" {
   }
 }
 
-
-
-
-# Configure the PostgreSQL parameter group
 resource "aws_db_parameter_group" "postgres_params" {
   name_prefix = "csye6225-postgres-params"
-  family      = "postgres13"
+  family      = "postgres14"
 
   parameter {
     apply_method = "pending-reboot"
@@ -265,14 +346,144 @@ resource "aws_db_parameter_group" "postgres_params" {
   }
 }
 
-
-
-
-
 resource "aws_db_subnet_group" "private_rds_subnet_group" {
   name        = "private-rds-subnet-group"
   description = "Private subnet group for RDS instances"
   subnet_ids  = aws_subnet.private_subnets.*.id
+}
+
+resource "aws_db_instance" "rds_instance" {
+  allocated_storage    = 10
+  identifier           = "csye6225"
+  engine               = "postgres"
+  instance_class       = "db.t3.micro"
+  multi_az             = false
+  username             = "csye6225"
+  password             = "pickapassword"
+  db_subnet_group_name = aws_db_subnet_group.private_rds_subnet_group.name
+  publicly_accessible  = false
+  name                 = "csye6225"
+  skip_final_snapshot  = true
+  parameter_group_name = aws_db_parameter_group.postgres_params.name
+  # Attach database security group
+  vpc_security_group_ids = [
+    aws_security_group.database_security_group.id
+  ]
+}
+resource "aws_autoscaling_policy" "upautoscaling_policy" {
+  name                   = "upautoscaling_policy"
+  scaling_adjustment     = 1
+  adjustment_type        = "PercentChangeInCapacity"
+  cooldown               = 60
+  autoscaling_group_name = aws_autoscaling_group.autoscaling.name
+}
+
+resource "aws_cloudwatch_metric_alarm" "scaleuppolicyalarm" {
+  alarm_name          = "scaleuppolicyalarm"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 120
+  statistic           = "Average"
+  threshold           = 5
+
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.autoscaling.name
+  }
+
+  alarm_description = "ec2 cpu utilization monitoring"
+  alarm_actions     = [aws_autoscaling_policy.upautoscaling_policy.arn]
+}
+
+resource "aws_autoscaling_policy" "downautoscaling_policy" {
+  name                   = "upautoscaling_policy"
+  scaling_adjustment     = -1
+  adjustment_type        = "PercentChangeInCapacity"
+  cooldown               = 60
+  autoscaling_group_name = aws_autoscaling_group.autoscaling.name
+}
+resource "aws_cloudwatch_metric_alarm" "scaledownpolicyalarm" {
+  alarm_name          = "scaledownpolicyalarm"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 120
+  statistic           = "Average"
+  threshold           = 3
+
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.autoscaling.name
+  }
+
+  alarm_description = "ec2 cpu utilization monitoring"
+  alarm_actions     = [aws_autoscaling_policy.downautoscaling_policy.arn]
+}
+
+resource "aws_autoscaling_group" "autoscaling" {
+
+  name                      = "csye6225-asg-spring2023"
+  vpc_zone_identifier       = [for subnet in aws_subnet.public_subnets : subnet.id]
+  max_size                  = 3
+  min_size                  = 1
+  health_check_grace_period = 300
+  health_check_type         = "EC2"
+  force_delete              = true
+  default_cooldown          = 60
+
+  launch_template {
+    id      = aws_launch_template.lt.id
+    version = aws_launch_template.lt.latest_version
+  }
+  target_group_arns = [aws_lb_target_group.target_group.arn]
+  tag {
+    key                 = "Key"
+    value               = "Value"
+    propagate_at_launch = true
+  }
+
+}
+
+resource "aws_launch_template" "lt" {
+  name                    = "asg_launch_config"
+  image_id                = var.ami_id
+  instance_type           = var.instance_type
+  key_name                = var.key_name
+  disable_api_termination = true
+
+
+  network_interfaces {
+    associate_public_ip_address = true
+    security_groups             = [aws_security_group.instance.id]
+    subnet_id                   = aws_subnet.public_subnets[1].id
+  }
+
+  user_data = base64encode(templatefile("userdata.sh", {
+    DB_HOST        = "${aws_db_instance.rds_instance.endpoint}"
+    DB_USER        = "${aws_db_instance.rds_instance.username}"
+    DB_PASSWORD    = "${aws_db_instance.rds_instance.password}"
+    S3_BUCKET_NAME = "${aws_s3_bucket.private_s3_bucket.bucket}"
+  }))
+
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ec2_instance_profile.name
+  }
+
+
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      delete_on_termination = true
+      volume_size           = 50
+      volume_type           = "gp2"
+    }
+  }
+  tags = {
+    Name = "Terraform_Managed_Custom_AMI_Instance"
+  }
 }
 
 
@@ -295,6 +506,15 @@ resource "aws_iam_role" "ec2_csye6225_role" {
         Principal = {
           Service = "logs.${data.aws_region.current.name}.amazonaws.com"
         }
+      },
+      {
+        "Sid" : "AssumeAutoScalingRole",
+        "Effect" : "Allow",
+        "Principal" : {
+          "Service" : "autoscaling.amazonaws.com"
+        },
+        "Action" : "sts:AssumeRole",
+        "Condition" : {}
       }
     ]
   })
@@ -304,12 +524,12 @@ resource "aws_iam_role" "ec2_csye6225_role" {
   }
 }
 
-data "aws_region" "current" {}
 
 resource "aws_iam_role_policy_attachment" "webapp_s3_policy_attachment" {
   policy_arn = aws_iam_policy.webapp_s3_policy.arn
   role       = aws_iam_role.ec2_csye6225_role.name
 }
+
 
 resource "aws_iam_role_policy_attachment" "cloudwatch_agent_policy_attachment" {
   //  name       = "cloudwatch_policy_attachment"
@@ -324,93 +544,6 @@ resource "aws_iam_instance_profile" "ec2_instance_profile" {
 }
 
 
-
-resource "aws_security_group" "database_security_group" {
-  name_prefix = "db_security_group"
-  vpc_id      = aws_vpc.vpc1.id
-
-  ingress {
-    from_port = 5432
-    to_port   = 5432
-    protocol  = "tcp"
-
-    security_groups = [aws_security_group.app_security_group.id]
-
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-resource "aws_db_instance" "rds_instance" {
-  allocated_storage    = 10
-  identifier           = "csye6225"
-  engine               = "postgres"
-  instance_class       = "db.t3.micro"
-  multi_az             = false
-  username             = "csye6225"
-  password             = "pickapassword"
-  db_subnet_group_name = aws_db_subnet_group.private_rds_subnet_group.name
-  publicly_accessible  = false
-  name                 = "csye6225"
-  skip_final_snapshot  = true
-  # Attach database security group
-  vpc_security_group_ids = [
-    aws_security_group.app_security_group.id,
-    aws_security_group.database_security_group.id
-  ]
-}
-
-resource "aws_instance" "my_ec2_instance" {
-
-  ami                    = var.ami_id
-  instance_type          = var.instance_type
-  key_name               = var.key_name
-  subnet_id              = aws_subnet.public_subnets[1].id
-  vpc_security_group_ids = [aws_security_group.app_security_group.id, aws_security_group.database_security_group.id]
-
-  user_data = <<-EOF
-#!/bin/bash
-cd /home/ec2-user/script
-touch ./.env
-
-echo "DB_HOST=$(echo ${aws_db_instance.rds_instance.endpoint} | cut -d ':' -f 1)" >> .env
-echo "DB_USER=${aws_db_instance.rds_instance.username}" >> .env
-echo "DB_PASSWORD=${aws_db_instance.rds_instance.password}" >> .env
-echo "S3_BUCKET_NAME=${aws_s3_bucket.private_s3_bucket.bucket}" >> .env
-
-sudo su
-mkdir ./upload
-sudo chown ec2-user:ec2-user /home/ec2-user/script/*
-sudo systemctl stop webapp.service
-sudo systemctl daemon-reload
-sudo systemctl enable webapp.service
-sudo systemctl start webapp.service
-
-source ./.env
-
-EOF
-
-  root_block_device {
-    volume_size = var.root_volume_size
-    volume_type = var.root_volume_type
-  }
-  disable_api_termination = var.protect_from_termination
-
-  connection {
-    type        = "ssh"
-    user        = "ec2-user"
-    private_key = file(var.private_key_path)
-    host        = self.public_ip
-  }
-  iam_instance_profile = aws_iam_instance_profile.ec2_instance_profile.name
-
-}
-
 data "aws_route53_zone" "zone" {
   name = "${var.profile}.abhinavpalem.me"
 }
@@ -419,9 +552,13 @@ resource "aws_route53_record" "main" {
   zone_id = data.aws_route53_zone.zone.id
   name    = "${var.profile}.abhinavpalem.me"
   type    = "A"
-  ttl     = "300"
-  records = [aws_instance.my_ec2_instance.public_ip]
+
+  alias {
+    name                   = aws_lb.load_balancer.dns_name
+    zone_id                = aws_lb.load_balancer.zone_id
+    evaluate_target_health = true
+
+  }
 
   # Ensure the A record is created before the EC2 instance
-  depends_on = [aws_instance.my_ec2_instance]
 }
