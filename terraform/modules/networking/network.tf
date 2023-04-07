@@ -200,7 +200,11 @@ resource "random_id" "random" {
   byte_length = 4
 }
 
-data "aws_region" "current" {}
+
+
+
+
+
 
 resource "aws_lb" "load_balancer" {
   name               = "web-lb"
@@ -208,7 +212,7 @@ resource "aws_lb" "load_balancer" {
   load_balancer_type = "application"
   security_groups    = [aws_security_group.load_balancer_security_group.id]
   subnets            = [aws_subnet.public_subnets[0].id, aws_subnet.public_subnets[1].id, aws_subnet.public_subnets[2].id]
-  enable_deletion_protection = true
+  enable_deletion_protection = false
   tags = {
     Environment = "prod"
   }
@@ -353,7 +357,7 @@ resource "aws_db_subnet_group" "private_rds_subnet_group" {
 }
 
 resource "aws_db_instance" "rds_instance" {
-  allocated_storage    = 10
+  allocated_storage    = 20
   identifier           = "csye6225"
   engine               = "postgres"
   instance_class       = "db.t3.micro"
@@ -397,7 +401,7 @@ resource "aws_cloudwatch_metric_alarm" "scaleuppolicyalarm" {
 }
 
 resource "aws_autoscaling_policy" "downautoscaling_policy" {
-  name                   = "upautoscaling_policy"
+  name                   = "downautoscaling_policy"
   scaling_adjustment     = -1
   adjustment_type        = "PercentChangeInCapacity"
   cooldown               = 60
@@ -424,7 +428,7 @@ resource "aws_cloudwatch_metric_alarm" "scaledownpolicyalarm" {
 resource "aws_autoscaling_group" "autoscaling" {
 
   name                      = "csye6225-asg-spring2023"
-  vpc_zone_identifier       = [for subnet in aws_subnet.public_subnets : subnet.id]
+  vpc_zone_identifier       = [aws_subnet.public_subnets[0].id, aws_subnet.public_subnets[1].id, aws_subnet.public_subnets[2].id ]
   max_size                  = 3
   min_size                  = 1
   health_check_grace_period = 300
@@ -450,7 +454,7 @@ resource "aws_launch_template" "lt" {
   image_id                = var.ami_id
   instance_type           = var.instance_type
   key_name                = var.key_name
-  disable_api_termination = true
+  disable_api_termination = false
 
 
   network_interfaces {
@@ -524,6 +528,7 @@ resource "aws_iam_role" "ec2_csye6225_role" {
   }
 }
 
+data "aws_region" "current" {}
 
 resource "aws_iam_role_policy_attachment" "webapp_s3_policy_attachment" {
   policy_arn = aws_iam_policy.webapp_s3_policy.arn
@@ -536,6 +541,8 @@ resource "aws_iam_role_policy_attachment" "cloudwatch_agent_policy_attachment" {
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
   role       = aws_iam_role.ec2_csye6225_role.name
 }
+
+
 
 resource "aws_iam_instance_profile" "ec2_instance_profile" {
   name = "EC2-CSYE6225-Instance-Profile"
@@ -561,4 +568,9 @@ resource "aws_route53_record" "main" {
   }
 
   # Ensure the A record is created before the EC2 instance
+}
+
+resource "aws_cloudwatch_log_group" "csye6225" {
+  name = "csye6225"
+  
 }
