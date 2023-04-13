@@ -184,6 +184,13 @@ resource "aws_security_group" "load_balancer_security_group" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
   egress {
     from_port   = 0
     to_port     = 0
@@ -244,8 +251,10 @@ resource "aws_lb_target_group" "target_group" {
 resource "aws_lb_listener" "lb_listener" {
 
   load_balancer_arn = aws_lb.load_balancer.arn
-  port              = "80"
-  protocol          = "HTTP"
+  port              = "443"
+  protocol          = "HTTPS"
+  ssl_policy = "ELBSecurityPolicy-TLS-1-2-Ext-2018-06"
+  certificate_arn = "arn:aws:acm:us-east-1:599903942405:certificate/f9d2d3c0-d478-4d66-ab5b-34b18b1c813e"
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.target_group.arn
@@ -283,7 +292,7 @@ resource "aws_iam_policy" "webapp_s3_policy" {
 
 resource "aws_s3_bucket" "private_s3_bucket" {
   bucket        = "my-bucket-${random_id.random.hex}"
-  acl           = "private"
+  //acl           = "private"
   force_destroy = true
 
   server_side_encryption_configuration {
@@ -367,6 +376,8 @@ resource "aws_db_instance" "rds_instance" {
   db_subnet_group_name = aws_db_subnet_group.private_rds_subnet_group.name
   publicly_accessible  = false
   name                 = "csye6225"
+  storage_encrypted = true
+  kms_key_id             = aws_kms_key.rds_key.arn
   skip_final_snapshot  = true
   parameter_group_name = aws_db_parameter_group.postgres_params.name
   # Attach database security group
@@ -438,7 +449,8 @@ resource "aws_autoscaling_group" "autoscaling" {
 
   launch_template {
     id      = aws_launch_template.lt.id
-    version = aws_launch_template.lt.latest_version
+    //version = aws_launch_template.lt.latest_version
+    version = "$Latest"
   }
   target_group_arns = [aws_lb_target_group.target_group.arn]
   tag {
@@ -483,6 +495,8 @@ resource "aws_launch_template" "lt" {
       delete_on_termination = true
       volume_size           = 50
       volume_type           = "gp2"
+      encrypted             = true
+      kms_key_id            = aws_kms_key.ebs_key.arn
     }
   }
   tags = {
@@ -550,7 +564,71 @@ resource "aws_iam_instance_profile" "ec2_instance_profile" {
   role = aws_iam_role.ec2_csye6225_role.name
 }
 
+resource "aws_kms_key" "rds_key" {
+  description             = "My customer-managed key"
+  deletion_window_in_days = 7
+}
 
+resource "aws_kms_key" "ebs_key" {
+  description             = "Customer-managed encryption key for EBS instances"
+  deletion_window_in_days = 7
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "Enable IAM User Permissions"
+        Effect = "Allow"
+        Principal = {
+          AWS = "*"
+        }
+        Action = [
+          "kms:*"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow administration of the key"
+        Effect = "Allow"
+        Principal = {
+          AWS = ["arn:aws:iam::599903942405:role/aws-service-role/elasticloadbalancing.amazonaws.com/AWSServiceRoleForElasticLoadBalancing",
+          "arn:aws:iam::599903942405:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"]
+        }
+        Action = [
+          "kms:Create*",
+          "kms:Describe*",
+          "kms:Enable*",
+          "kms:List*",
+          "kms:Put*",
+          "kms:Update*",
+          "kms:Revoke*",
+          "kms:Disable*",
+          "kms:Get*",
+          "kms:Delete*",
+          "kms:TagResource",
+          "kms:UntagResource",
+          "kms:ScheduleKeyDeletion",
+          "kms:CancelKeyDeletion"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow use of the key for EBS encryption"
+        Effect = "Allow"
+        Principal = {
+          Service = ["ec2.amazonaws.com"]
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
 data "aws_route53_zone" "zone" {
   name = "${var.profile}.abhinavpalem.me"
 }
