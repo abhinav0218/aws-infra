@@ -44,10 +44,3 @@ private key = private.key
 
 I have added encryption to RDS instance and EBS volumes of EC2 instances using kms policy.
 
-
-
-
-
-
-  
-
