@@ -14,8 +14,33 @@ To run the terraform configuration files, we have to run the following commands
 2. *terraform apply* - this command creates all the resources listed in the config files. Before creation a confirmation is asked.
 3. *Terraform destroy* - this command destroys all the created and active resources
 
-Here, we have created 1 vpc, 3 private subnets and 3 public subnets in different availability zones but same region, 1 public route table, one private route table and 1 internet gateway.
+Assignment 9
+
+In this assignment we are adding Continuous deployment of Web application using github actions for building a new AMI of latest version 
+
+Requested a new SSL certificate for demo through AWS certificate manager. For demo account I have used namecheap to generate a SSL certificate.For generating the certificate I have followed these steps:
+
+Requested SSL certificate through namecheap for 1 year.
+
+Added CNAME in the AWS demo account using host and target details.
+
+Generated CSR using these commands:
+
+sudo openssl genrsa -out private.key 2048 --> Generates a new private key
+
+sudo openssl req -new -newkey rsa:2048 -nodes -keyout private.key -out csr.pem --> generates a CSR
+
+After activating SSL certificate I have imported to AWS Demo account using this command:
 
 
-We have included .terraform.lock.hcl and terraform.state in the gitignore file.
+aws acm import-certificate --certificate fileb://demo_abhinavpalem_me/demo_abhinavpalem_me.crt \ 
+      --certificate-chain fileb://demo_abhinavpalem_me/demo_abhinavpalem_me.ca-bundle \
+      --private-key fileb://private.key --profile demo
+
+
+Certficate file = demo_abhinavpalem_me.crt
+Certficate chain = demo_abhinavpalem_me.ca-bundle
+private key = private.key
+
+I have added encryption to RDS instance and EBS volumes of EC2 instances using kms policy.
 
